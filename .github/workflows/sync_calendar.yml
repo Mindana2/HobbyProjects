@@ -42,7 +42,7 @@ jobs:
       
     - name: Run Python script
       env:
-            # Här mappar vi dina GitHub Secrets till namnen Python letar efter
-            USER: ${{ secrets.USER }}
-            PASSWORD: ${{ secrets.PASSWORD }}
+        # Här mappar vi dina GitHub Secrets till namnen Python letar efter
+        USER: ${{ secrets.USER }}
+        PASSWORD: ${{ secrets.PASSWORD }}
       run: python main.py
