@@ -15,21 +15,20 @@ class google_calendar():
         pass
 
     def add_event(self, start, end, title, status):
-        if status == 'Aktiv':
-            event = {
-                'summary': title,
+        event = {
+            'summary': title,
 
-                'start': {
-                    'dateTime': start,
-                    'timeZone': 'Europe/Stockholm'
-                },
-                'end': {
-                    'dateTime': end,
-                    'timeZone': 'Europe/Stockholm'
+            'start': {
+                'dateTime': start,
+                'timeZone': 'Europe/Stockholm'
+            },
+            'end': {
+                'dateTime': end,
+                'timeZone': 'Europe/Stockholm'
 
-                }
             }
-            self.service.events().insert(calendarId=self.calendar_id, body=event).execute()
+        }
+        self.service.events().insert(calendarId=self.calendar_id, body=event).execute()
 
     def sync_dataframe(self, df):
         event_list = self.service.events().list(calendarId=self.calendar_id).execute()
