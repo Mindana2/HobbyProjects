@@ -1,0 +1,16 @@
+.env
+token.json
+credentials.json
+
+# Google API-nycklar och tokens (HEMLISAR!)
+credentials.json
+token.json
+
+# Virtuell miljö (så du slipper pusha alla installerade bibliotek)
+.venv/
+venv/
+ENV/
+
+# Python-systemfiler
+__pycache__/
+*.pyc
