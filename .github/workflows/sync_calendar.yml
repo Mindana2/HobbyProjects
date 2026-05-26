@@ -13,8 +13,11 @@ jobs:
 
     steps:
     # Hämta kod från repot
+# Hämta kod från repot (Tvinga den att ta senaste main!)
     - name: Checkout repository
       uses: actions/checkout@v4
+      with:
+        ref: main
 
     # Starta Python på den virtuella datorn
     - name: Set up Python
