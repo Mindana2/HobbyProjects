@@ -29,11 +29,14 @@ class google_calendar():
 
                 }
             }
-        event = self.service.events().insert(calendarId=self.calendar_id, body=event).execute()
+            self.service.events().insert(calendarId=self.calendar_id, body=event).execute()
 
     def sync_dataframe(self, df):
         event_list = self.service.events().list(calendarId=self.calendar_id).execute()
         existing_events = []
+        event_ids = {}
+        df_shifts = []
+
         for event in event_list.get('items', []):
             start = event.get('start')
             end = event.get('end')
@@ -42,13 +45,27 @@ class google_calendar():
                 if start.get('dateTime') and end.get('dateTime'):
                     starttime = start.get('dateTime')
                     endtime = end.get('dateTime')
+                    
+                    # Skapa lista och dictionary av alla pass som finns i kalendern redan.
                     existing_events.append((starttime, endtime, summary))
+
+                    event_ids[(starttime, endtime, summary)] = event.get('id')
+
         for i, row in df.iterrows():
-            if (row['starttime'], row['endtime'], row['function']) not in existing_events:
-                self.add_event(row['starttime'], row['endtime'], row['function'], row['status'])
+        
+            # Skapa lista på alla pass som är 'Aktiva' på PARPAS
+            if row['status'] == 'Aktiv':
+                df_shifts.append((row['starttime'], row['endtime'], row['function']))
+
+                # Om passet på PARPAS inte redan finns i kalendern, lägg till.
+                if (row['starttime'], row['endtime'], row['function']) not in existing_events:
+                    self.add_event(row['starttime'], row['endtime'], row['function'], row['status'])
                                          
-                                #self.add_event(row['starttime'], row['endtime'], row['function'], row['status'])
-    
+        # Om passet finns i kalendern men har tagits bort från PARPAS (Bytt pass eller beviljad ledighet etc.), ta bort.
+        for event_set in existing_events:
+            if event_set not in df_shifts:
+                self.delete_event(event_ids.get(event_set))
+
     def delete_event(self, event_id):
         try:
             self.service.events().delete(self.calendar_id, event_id)
