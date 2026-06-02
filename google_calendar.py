@@ -67,7 +67,7 @@ class google_calendar():
 
     def delete_event(self, event_id):
         try:
-            self.service.events().delete(self.calendar_id, event_id)
+            self.service.events().delete(calendarId=self.calendar_id, eventId=event_id)
         
         except HttpError as err:
             raise err._get_reason()  
