@@ -63,6 +63,7 @@ class google_calendar():
         # Om passet finns i kalendern men har tagits bort från PARPAS (Bytt pass eller beviljad ledighet etc.), ta bort.
         for event_set in existing_events:
             if event_set not in df_shifts:
+                print("found removed shift")
                 self.delete_event(event_ids.get(event_set))
 
     def delete_event(self, event_id):
