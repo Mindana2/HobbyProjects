@@ -58,11 +58,14 @@ class google_calendar():
 
                 # Om passet på PARPAS inte redan finns i kalendern, lägg till.
                 if (row['starttime'], row['endtime'], row['function']) not in existing_events:
+                    print("Event added\n", "Starttime:", event_set[0], "Endtime:", event_set[1], "Function:", event_set[2])
+
                     self.add_event(row['starttime'], row['endtime'], row['function'], row['status'])
                                          
         # Om passet finns i kalendern men har tagits bort från PARPAS (Bytt pass eller beviljad ledighet etc.), ta bort.
         for event_set in existing_events:
             if event_set not in df_shifts:
+                print("Event deleted\n", "Starttime:", event_set[0], "Endtime:", event_set[1], "Function:", event_set[2])
                 self.delete_event(event_ids.get(event_set))
 
     def delete_event(self, event_id):
