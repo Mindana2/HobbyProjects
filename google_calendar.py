@@ -58,7 +58,7 @@ class google_calendar():
 
                 # Om passet på PARPAS inte redan finns i kalendern, lägg till.
                 if (row['starttime'], row['endtime'], row['function']) not in existing_events:
-                    print("Event added\n", "Starttime:", event_set[0], "Endtime:", event_set[1], "Function:", event_set[2])
+                    print("Event added\n", "Starttime:", row['starttime'], "Endtime:", row['endtime'], "Function:", row['function'])
 
                     self.add_event(row['starttime'], row['endtime'], row['function'], row['status'])
                                          
