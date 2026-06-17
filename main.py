@@ -1,5 +1,5 @@
-from softadmin_scraper import softadmin_scraper
-from google_calendar import google_calendar
+from backend.softadmin_scraper import softadmin_scraper
+from backend.google_calendar import google_calendar
 import dotenv
 from os import environ
 from pathlib import Path
