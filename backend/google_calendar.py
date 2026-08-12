@@ -4,17 +4,17 @@ from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 
 
-
 class google_calendar():
 
     def __init__(self):
         self.token_path = 'token.json'
         creds = Credentials.from_authorized_user_file(self.token_path)
         self.service = build("calendar", "v3", credentials=creds)
-                self.calendar_id = os.environ.get('CALENDAR_ID', '9be1390db5471287b61e4bce2393af92c5d2434edab90db3aa96b20554437bf2@group.calendar.google.com')
+        self.calendar_id = os.environ.get('CALENDAR_ID', '9be1390db5471287b61e4bce2393af92c5d2434edab90db3aa96b20554437bf2@group.calendar.google.com')
 
     def get_upcoming_events(self):
         pass
+
     def add_event(self, start, end, title, status):
         event = {
             'summary': title,
@@ -26,7 +26,6 @@ class google_calendar():
             'end': {
                 'dateTime': end,
                 'timeZone': 'Europe/Stockholm'
-
             }
         }
         self.service.events().insert(calendarId=self.calendar_id, body=event).execute()
@@ -45,25 +44,21 @@ class google_calendar():
                 if start.get('dateTime') and end.get('dateTime'):
                     starttime = start.get('dateTime')
                     endtime = end.get('dateTime')
-                    
                     # Skapa lista och dictionary av alla pass som finns i kalendern redan.
                     existing_events.append((starttime, endtime, summary))
-
                     event_ids[(starttime, endtime, summary)] = event.get('id')
 
         for i, row in df.iterrows():
-        
-            # Skapa lista på alla pass som är 'Aktiva' på PARPAS
+            # Skapa lista pa alla pass som ar 'Aktiva' pa PARPAS
             if row['status'] == 'Aktiv':
                 df_shifts.append((row['starttime'], row['endtime'], row['function']))
 
-                # Om passet på PARPAS inte redan finns i kalendern, lägg till.
+                # Om passet pa PARPAS inte redan finns i kalendern, lagg till.
                 if (row['starttime'], row['endtime'], row['function']) not in existing_events:
                     print("Event added\n", "Starttime:", row['starttime'], "Endtime:", row['endtime'], "Function:", row['function'])
-
                     self.add_event(row['starttime'], row['endtime'], row['function'], row['status'])
-                                         
-        # Om passet finns i kalendern men har tagits bort från PARPAS (Bytt pass eller beviljad ledighet etc.), ta bort.
+
+        # Om passet finns i kalendern men har tagits bort fran PARPAS (Bytt pass eller beviljad ledighet etc.), ta bort.
         for event_set in existing_events:
             if event_set not in df_shifts:
                 print("Event deleted\n", "Starttime:", event_set[0], "Endtime:", event_set[1], "Function:", event_set[2])
@@ -72,8 +67,5 @@ class google_calendar():
     def delete_event(self, event_id):
         try:
             self.service.events().delete(calendarId=self.calendar_id, eventId=event_id).execute()
-        
         except HttpError as err:
-            raise err._get_reason()  
-
-    
+            raise err._get_reason()
