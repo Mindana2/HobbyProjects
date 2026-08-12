@@ -1,3 +1,4 @@
+import os
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
@@ -10,10 +11,10 @@ class google_calendar():
         self.token_path = 'token.json'
         creds = Credentials.from_authorized_user_file(self.token_path)
         self.service = build("calendar", "v3", credentials=creds)
-        self.calendar_id = '5e9fd551a6b862fb18072083f65f88b9c1e3c93546523d0f0ea2ebdea4937f02@group.calendar.google.com'
+        self.calendar_id = os.environ.get('CALENDAR_ID', 'cosminxgl@gmail.com')
+
     def get_upcoming_events(self):
         pass
-
     def add_event(self, start, end, title, status):
         event = {
             'summary': title,
