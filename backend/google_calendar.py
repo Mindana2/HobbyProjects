@@ -11,7 +11,7 @@ class google_calendar():
         self.token_path = 'token.json'
         creds = Credentials.from_authorized_user_file(self.token_path)
         self.service = build("calendar", "v3", credentials=creds)
-        self.calendar_id = os.environ.get('CALENDAR_ID', 'cosminxgl@gmail.com')
+                self.calendar_id = os.environ.get('CALENDAR_ID', '9be1390db5471287b61e4bce2393af92c5d2434edab90db3aa96b20554437bf2@group.calendar.google.com')
 
     def get_upcoming_events(self):
         pass
