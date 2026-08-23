@@ -3,19 +3,26 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
-
 class google_calendar():
-
     def __init__(self):
         self.token_path = 'token.json'
         creds = Credentials.from_authorized_user_file(self.token_path, SCOPES)
 
         # Refresh expired token so the script never fails due to a stale access token
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except RefreshError as err:
+                raise Exception(
+                    "Google OAuth refresh token is invalid, expired, or has been revoked "
+                    "(original error: {}). You need to regenerate token.json locally "
+                    "(re-run the OAuth flow / quickstart.py) and update the GOOGLE_TOKEN "
+                    "GitHub secret with the new token contents.".format(err)
+                )
 
         self.service = build("calendar", "v3", credentials=creds)
         self.calendar_id = os.environ.get(
@@ -45,14 +52,12 @@ class google_calendar():
         existing_events = []
         event_ids = {}
         page_token = None
-
         while True:
             response = self.service.events().list(
                 calendarId=self.calendar_id,
                 pageToken=page_token,
                 maxResults=2500,
             ).execute()
-
             for event in response.get('items', []):
                 start = event.get('start')
                 end = event.get('end')
@@ -63,27 +68,22 @@ class google_calendar():
                         endtime = end.get('dateTime')
                         existing_events.append((starttime, endtime, summary))
                         event_ids[(starttime, endtime, summary)] = event.get('id')
-
             page_token = response.get('nextPageToken')
             if not page_token:
                 break
-
         return existing_events, event_ids
 
     def sync_dataframe(self, df):
         existing_events, event_ids = self._get_all_events()
         df_shifts = []
-
         for i, row in df.iterrows():
             # Skapa lista pa alla pass som ar 'Aktiva' pa PARPAS
             if row['status'] == 'Aktiv':
                 df_shifts.append((row['starttime'], row['endtime'], row['function']))
-
                 # Om passet pa PARPAS inte redan finns i kalendern, lagg till.
                 if (row['starttime'], row['endtime'], row['function']) not in existing_events:
                     print("Event added\n", "Starttime:", row['starttime'], "Endtime:", row['endtime'], "Function:", row['function'])
                     self.add_event(row['starttime'], row['endtime'], row['function'], row['status'])
-
         # Om passet finns i kalendern men har tagits bort fran PARPAS, ta bort.
         for event_set in existing_events:
             if event_set not in df_shifts:
