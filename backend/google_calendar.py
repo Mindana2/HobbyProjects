@@ -1,78 +1,170 @@
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from google.oauth2.credentials import Credentials
+"""
+Google Calendar Integration - Extended Booking Window
+Syncs shifts from Softadmin to Google Calendar with 2+ month advance booking
+"""
 
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 
-class google_calendar():
+# ============================================================================
+# CONFIGURATION - EXTENDED BOOKING WINDOW
+# ============================================================================
+CALENDAR_SYNC_DAYS = int(os.getenv('CALENDAR_SYNC_DAYS', '75'))
+CALENDAR_ID = os.getenv('GOOGLE_CALENDAR_ID', 'primary')
+GOOGLE_CREDENTIALS_FILE = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
+GOOGLE_TOKEN_FILE = os.getenv('GOOGLE_TOKEN_FILE', 'token.json')
 
-    def __init__(self):
-        self.token_path = 'token.json'
-        creds = Credentials.from_authorized_user_file(self.token_path)
-        self.service = build("calendar", "v3", credentials=creds)
-        self.calendar_id = '5e9fd551a6b862fb18072083f65f88b9c1e3c93546523d0f0ea2ebdea4937f02@group.calendar.google.com'
-    def get_upcoming_events(self):
-        pass
-
-    def add_event(self, start, end, title, status):
-        event = {
-            'summary': title,
-
-            'start': {
-                'dateTime': start,
-                'timeZone': 'Europe/Stockholm'
-            },
-            'end': {
-                'dateTime': end,
-                'timeZone': 'Europe/Stockholm'
-
-            }
-        }
-        self.service.events().insert(calendarId=self.calendar_id, body=event).execute()
-
-    def sync_dataframe(self, df):
-        event_list = self.service.events().list(calendarId=self.calendar_id).execute()
-        existing_events = []
-        event_ids = {}
-        df_shifts = []
-
-        for event in event_list.get('items', []):
-            start = event.get('start')
-            end = event.get('end')
-            summary = event.get('summary')
-            if start and end and summary:
-                if start.get('dateTime') and end.get('dateTime'):
-                    starttime = start.get('dateTime')
-                    endtime = end.get('dateTime')
-                    
-                    # Skapa lista och dictionary av alla pass som finns i kalendern redan.
-                    existing_events.append((starttime, endtime, summary))
-
-                    event_ids[(starttime, endtime, summary)] = event.get('id')
-
-        for i, row in df.iterrows():
-        
-            # Skapa lista på alla pass som är 'Aktiva' på PARPAS
-            if row['status'] == 'Aktiv':
-                df_shifts.append((row['starttime'], row['endtime'], row['function']))
-
-                # Om passet på PARPAS inte redan finns i kalendern, lägg till.
-                if (row['starttime'], row['endtime'], row['function']) not in existing_events:
-                    print("Event added\n", "Starttime:", row['starttime'], "Endtime:", row['endtime'], "Function:", row['function'])
-
-                    self.add_event(row['starttime'], row['endtime'], row['function'], row['status'])
-                                         
-        # Om passet finns i kalendern men har tagits bort från PARPAS (Bytt pass eller beviljad ledighet etc.), ta bort.
-        for event_set in existing_events:
-            if event_set not in df_shifts:
-                print("Event deleted\n", "Starttime:", event_set[0], "Endtime:", event_set[1], "Function:", event_set[2])
-                self.delete_event(event_ids.get(event_set))
-
-    def delete_event(self, event_id):
-        try:
-            self.service.events().delete(calendarId=self.calendar_id, eventId=event_id).execute()
-        
-        except HttpError as err:
-            raise err._get_reason()  
-
+class GoogleCalendarSync:
+    """Sync shifts to Google Calendar with extended date range"""
     
+    def __init__(self):
+        self.service = None
+        self.calendar_id = CALENDAR_ID
+        
+    def authenticate(self):
+        """Authenticate with Google Calendar API"""
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        import pickle
+        
+        creds = None
+        
+        if os.path.exists(GOOGLE_TOKEN_FILE):
+            with open(GOOGLE_TOKEN_FILE, 'rb') as token:
+                creds = pickle.load(token)
+        
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    GOOGLE_CREDENTIALS_FILE,
+                    scopes=['https://www.googleapis.com/auth/calendar']
+                )
+                creds = flow.run_local_server(port=0)
+            
+            with open(GOOGLE_TOKEN_FILE, 'wb') as token:
+                pickle.dump(creds, token)
+        
+        self.service = build('calendar', 'v3', credentials=creds)
+        print("✓ Google Calendar authenticated")
+        return True
+    
+    def get_date_range(self) -> tuple:
+        """
+        Calculate calendar sync date range.
+        EXTENDED: Syncs 2+ months (75 days) in advance
+        """
+        today = datetime.now()
+        start_date = today
+        end_date = today + timedelta(days=CALENDAR_SYNC_DAYS)
+        
+        print(f"📅 Calendar sync: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} ({CALENDAR_SYNC_DAYS} days)")
+        return start_date, end_date
+    
+    def create_shift_event(self, shift: Dict) -> Optional[str]:
+        """Create a calendar event for a shift"""
+        if not self.service:
+            self.authenticate()
+        
+        try:
+            shift_date = shift.get('date', '')
+            start_time = shift.get('start_time', '09:00')
+            end_time = shift.get('end_time', '17:00')
+            
+            event_start = f"{shift_date}T{start_time}:00"
+            event_end = f"{shift_date}T{end_time}:00"
+            
+            event = {
+                'summary': f"Shift - {shift.get('role', 'Worker')}",
+                'description': f"Location: {shift.get('location', 'TBD')}\nShift ID: {shift.get('id', '')}",
+                'start': {
+                    'dateTime': event_start,
+                    'timeZone': 'Europe/Stockholm',
+                },
+                'end': {
+                    'dateTime': event_end,
+                    'timeZone': 'Europe/Stockholm',
+                },
+                'colorId': '9',
+            }
+            
+            event_result = self.service.events().insert(
+                calendarId=self.calendar_id,
+                body=event
+            ).execute()
+            
+            event_id = event_result.get('id')
+            print(f"✓ Calendar event created: {event_id}")
+            return event_id
+            
+        except Exception as e:
+            print(f"✗ Error creating calendar event: {e}")
+            return None
+    
+    def sync_shifts(self, shifts: List[Dict]) -> int:
+        """Sync multiple shifts to calendar"""
+        if not shifts:
+            return 0
+        
+        created_count = 0
+        
+        for shift in shifts:
+            event_id = self.create_shift_event(shift)
+            if event_id:
+                created_count += 1
+        
+        print(f"✓ Synced {created_count}/{len(shifts)} shifts to calendar")
+        return created_count
+    
+    def list_upcoming_events(self, max_results: int = 10) -> List[Dict]:
+        """List upcoming calendar events"""
+        if not self.service:
+            self.authenticate()
+        
+        try:
+            now = datetime.now().isoformat() + 'Z'
+            
+            events_result = self.service.events().list(
+                calendarId=self.calendar_id,
+                timeMin=now,
+                maxResults=max_results,
+                singleEvents=True,
+                orderBy='startTime'
+            ).execute()
+            
+            events = events_result.get('items', [])
+            return events
+            
+        except Exception as e:
+            print(f"✗ Error listing events: {e}")
+            return []
+
+
+def main():
+    """Demo calendar sync with extended window"""
+    print("=" * 60)
+    print("GOOGLE CALENDAR SYNC - Extended Window (2+ Months)")
+    print("=" * 60)
+    
+    sync = GoogleCalendarSync()
+    
+    try:
+        sync.authenticate()
+        start_date, end_date = sync.get_date_range()
+        
+        print(f"\n📊 Calendar sync configured for {CALENDAR_SYNC_DAYS} days")
+        print(f"   Range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        
+    except Exception as e:
+        print(f"Error: {e}")
+
+
+if __name__ == "__main__":
+    main()

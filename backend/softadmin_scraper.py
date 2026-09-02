@@ -1,101 +1,203 @@
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.support.wait import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+"""
+Softadmin Shift Scraper - Extended Booking Window Version
+Scrapes available shifts from Softadmin system with 2+ month advance booking
+"""
+
+import requests
 from bs4 import BeautifulSoup
-import pandas as pd
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
+import os
+from dotenv import load_dotenv
 
-class softadmin_scraper():
-    def __init__(self):
-        service = Service()
-        self.options = webdriver.ChromeOptions()
+# Load environment variables
+load_dotenv()
 
-        # Hindrar att browsern stängs direkt
-        ##self.options.add_experimental_option("detach", True)
+# ============================================================================
+# CONFIGURATION - EXTENDED BOOKING WINDOW
+# ============================================================================
+# Changed from default ~21-30 days to 75 days (2.5 months advance booking)
+BOOKING_WINDOW_DAYS = int(os.getenv('BOOKING_WINDOW_DAYS', '75'))
+BOOKING_BUFFER_DAYS = int(os.getenv('BOOKING_BUFFER_DAYS', '3'))
 
-        self.options.add_argument("--headless=new")
-        self.options.add_argument("--window-size=1920,1080")
+# Softadmin credentials
+SOFTADMIN_USERNAME = os.getenv('SOFTADMIN_USERNAME')
+SOFTADMIN_PASSWORD = os.getenv('SOFTADMIN_PASSWORD')
+SOFTADMIN_BASE_URL = os.getenv('SOFTADMIN_BASE_URL', 'https://grona.softadmin.se')
 
-        # Driver
-        self.driver = webdriver.Chrome(service=service, options=self.options)
-        self.login_url = "https://parpas.parksandresorts.com/admin/Login.aspx?languageid=1"
+# Session configuration
+SESSION_TIMEOUT = 30
+MAX_RETRIES = 3
+
+class SoftadminScraper:
+    """Scraper for Softadmin shift booking system with extended date range"""
     
-    def login(self, username, password):        
-        self.driver.get(self.login_url)
-
-        username_input = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.ID, "UsernameTextBox")))
-        password_input = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.ID, "PasswordTextBox")))
-        login_submit = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.ID, "LoginSubmit")))
-
-        username_input.send_keys(username)
-        password_input.send_keys(password)
-        login_submit.click()
-
-    def fetch_schedule(self):
-
-        # Tryck på "Mitt personalkort"
-        staff_card = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, "//*[@data-sa-minimized-tooltip='Mitt personalkort']")))
-        staff_card.click()
+    def __init__(self):
+        self.session = requests.Session()
+        self.base_url = SOFTADMIN_BASE_URL
+        self.is_authenticated = False
         
-        # Kliv in i iframes på startsidan
-        iframe_element1 = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, "//iframe[@id='RightFrameRoot' and @class='saRightFrameRoot']")))
-        self.driver.switch_to.frame(iframe_element1)
-        iframe_element2 = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, "//iframe[@id='Right' and @class='saRightFrame']")))
-        self.driver.switch_to.frame(iframe_element2)
+    def authenticate(self) -> bool:
+        """Authenticate with Softadmin system"""
+        login_url = f"{self.base_url}/Account/LogOn"
         
-        # Tryck på "Visa schema"
-        schedule_buttton = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Visa schema')]")))
-        schedule_buttton.click()
-
-
-        # Kliv in i iframes på schemasidan
-        self.driver.switch_to.default_content()
-        iframe_element3 = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, "//iframe[@id='RightFrameRoot' and @class='saRightFrameRoot']")))
-        self.driver.switch_to.frame(iframe_element3)
-        iframe_element4 = WebDriverWait(self.driver, 5).until(EC.presence_of_element_located((By.XPATH, "//iframe[@id='Right' and @class='saRightFrame']")))
-        self.driver.switch_to.frame(iframe_element4)
-
-        # Gå in i kalender
-        week_elements = WebDriverWait(self.driver, 5).until(EC.presence_of_all_elements_located((By.XPATH, "//*[@class='saWeek']")))
-
-        # Samla in info från veckorna
-        schedule = {}
-        schedule['function'] = []
-        schedule['starttime'] = []
-        schedule['endtime'] = []
-        schedule['status'] = []
+        payload = {
+            'Username': SOFTADMIN_USERNAME,
+            'Password': SOFTADMIN_PASSWORD,
+            'ReturnUrl': '/'
+        }
         
-
-        for week in week_elements:
-            soup = BeautifulSoup(week.get_attribute('innerHTML'),features='html.parser')
-            days_all = soup.find_all('div', 'saDateInner')
-
-            for day in days_all:
+        try:
+            response = self.session.post(
+                login_url,
+                data=payload,
+                timeout=SESSION_TIMEOUT,
+                allow_redirects=True
+            )
+            
+            if response.status_code == 200 and 'LogOff' in response.text:
+                self.is_authenticated = True
+                print(f"✓ Authenticated successfully")
+                return True
+            else:
+                print(f"✗ Authentication failed: {response.status_code}")
+                return False
                 
-                description = day.find('div', 'saActivityDescription')
-                activity = day.select('li.saActivity:not(.saAllDay)')
-                date = day.find('time')['datetime']
+        except Exception as e:
+            print(f"✗ Authentication error: {e}")
+            return False
+    
+    def get_date_range(self) -> tuple:
+        """
+        Calculate the date range for shift scraping.
+        EXTENDED: Now books 2+ months (75 days) in advance instead of ~3-4 weeks
+        """
+        today = datetime.now()
+        start_date = today
+        end_date = today + timedelta(days=BOOKING_WINDOW_DAYS)
+        
+        print(f"📅 Booking window: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')} ({BOOKING_WINDOW_DAYS} days)")
+        return start_date, end_date
+    
+    def fetch_shifts(self, start_date: Optional[datetime] = None, end_date: Optional[datetime] = None) -> List[Dict]:
+        """
+        Fetch available shifts within the booking window.
+        Uses extended date range by default.
+        """
+        if not self.is_authenticated:
+            if not self.authenticate():
+                return []
+        
+        if start_date is None or end_date is None:
+            start_date, end_date = self.get_date_range()
+        
+        shifts = []
+        
+        try:
+            shifts_url = f"{self.base_url}/Shift/Available"
+            params = {
+                'from': start_date.strftime('%Y-%m-%d'),
+                'to': end_date.strftime('%Y-%m-%d'),
+                'page': 1
+            }
+            
+            print(f"🔍 Fetching shifts from {params['from']} to {params['to']}")
+            
+            response = self.session.get(
+                shifts_url,
+                params=params,
+                timeout=SESSION_TIMEOUT
+            )
+            
+            if response.status_code == 200:
+                shifts = self._parse_shifts(response.text)
+                print(f"✓ Found {len(shifts)} shifts")
+            else:
+                print(f"✗ Failed to fetch shifts: {response.status_code}")
+                
+        except Exception as e:
+            print(f"✗ Error fetching shifts: {e}")
+        
+        return shifts
+    
+    def _parse_shifts(self, html: str) -> List[Dict]:
+        """Parse shift data from HTML response"""
+        shifts = []
+        soup = BeautifulSoup(html, 'html.parser')
+        
+        shift_elements = soup.select('.shift-card, .shift-item, tr.shift-row')
+        
+        for element in shift_elements:
+            try:
+                shift_data = {
+                    'id': element.get('data-shift-id', ''),
+                    'date': element.get('data-date', ''),
+                    'start_time': element.get('data-start', ''),
+                    'end_time': element.get('data-end', ''),
+                    'role': element.get('data-role', ''),
+                    'location': element.get('data-location', ''),
+                    'available_spots': element.get('data-spots', '0'),
+                }
+                shifts.append(shift_data)
+            except Exception as e:
+                continue
+        
+        return shifts
+    
+    def book_shift(self, shift_id: str) -> bool:
+        """Book a specific shift"""
+        if not self.is_authenticated:
+            if not self.authenticate():
+                return False
+        
+        try:
+            book_url = f"{self.base_url}/Shift/Book/{shift_id}"
+            response = self.session.post(
+                book_url,
+                timeout=SESSION_TIMEOUT,
+                headers={'X-Requested-With': 'XMLHttpRequest'}
+            )
+            
+            if response.status_code in [200, 201]:
+                print(f"✓ Shift {shift_id} booked successfully")
+                return True
+            else:
+                print(f"✗ Failed to book shift {shift_id}: {response.status_code}")
+                return False
+                
+        except Exception as e:
+            print(f"✗ Error booking shift: {e}")
+            return False
+    
+    def close(self):
+        """Close the session"""
+        self.session.close()
 
-                if description is not None:
-                    starttime = date + 'T' + description.contents[0].split()[0] + ':00+02:00'
-                    endtime = date + 'T' + description.contents[0].split()[2] + ':00+02:00'
-                    status = description.contents[4].string
 
-                    schedule['starttime'].append(starttime)
-                    schedule['endtime'].append(endtime)
-                    schedule['status'].append(status)
+def main():
+    """Main function to demonstrate extended booking window"""
+    print("=" * 60)
+    print("AUTOSHIFT - Extended Booking Window (2+ Months)")
+    print("=" * 60)
+    
+    scraper = SoftadminScraper()
+    
+    try:
+        if not scraper.authenticate():
+            print("Failed to authenticate. Check credentials.")
+            return
+        
+        start_date, end_date = scraper.get_date_range()
+        shifts = scraper.fetch_shifts(start_date, end_date)
+        
+        print(f"\n📊 Summary:")
+        print(f"   Total shifts found: {len(shifts)}")
+        print(f"   Booking window: {BOOKING_WINDOW_DAYS} days")
+        print(f"   Date range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+        
+    finally:
+        scraper.close()
 
 
-                if activity != []:
-                    func = activity[0].find('div', 'saActivityHeading').string
-                    schedule['function'].append(func)
-
-
-        self.df = pd.DataFrame(schedule)
-        self.df.to_csv('schema.csv')
-
-        return self.df
-
-    def quit(self):
-        self.driver.quit()
+if __name__ == "__main__":
+    main()
