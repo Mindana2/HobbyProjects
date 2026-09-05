@@ -11,10 +11,12 @@ SCOPES = ["https://www.googleapis.com/auth/calendar"]
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-# How many days ahead to keep the calendar synced. Softadmin itself decides
-# how many shifts it actually shows/allows booking for; this only bounds how
-# far ahead we look at existing calendar events for cleanup/dedup purposes.
 CALENDAR_SYNC_DAYS = int(os.environ.get("CALENDAR_SYNC_DAYS", "75"))
+
+
+def _shift_date(iso_dt):
+    """Extract just the calendar date (YYYY-MM-DD) from an ISO datetime string."""
+    return datetime.fromisoformat(iso_dt).date().isoformat()
 
 
 class google_calendar():
@@ -22,7 +24,6 @@ class google_calendar():
         self.token_path = 'token.json'
         creds = Credentials.from_authorized_user_file(self.token_path, SCOPES)
 
-        # Refresh expired token so the script never fails due to a stale access token
         if creds and creds.expired and creds.refresh_token:
             try:
                 creds.refresh(Request())
@@ -35,9 +36,6 @@ class google_calendar():
                 )
 
         self.service = build("calendar", "v3", credentials=creds)
-        # Always defaults to the dedicated Parpas Shifts calendar.
-        # Override only via the CALENDAR_ID secret/env var if you deliberately
-        # want to point elsewhere -- never default to 'primary'.
         self.calendar_id = os.environ.get(
             'CALENDAR_ID',
             '9be1390db5471287b61e4bce2393af92c5d2434edab90db3aa96b20554437bf2@group.calendar.google.com'
@@ -49,17 +47,12 @@ class google_calendar():
     def add_event(self, start, end, title, status):
         event = {
             'summary': title,
-            'start': {
-                'dateTime': start,
-                'timeZone': 'Europe/Stockholm'
-            },
-            'end': {
-                'dateTime': end,
-                'timeZone': 'Europe/Stockholm'
-            }
+            'start': {'dateTime': start, 'timeZone': 'Europe/Stockholm'},
+            'end': {'dateTime': end, 'timeZone': 'Europe/Stockholm'}
         }
         try:
-            self.service.events().insert(calendarId=self.calendar_id, body=event).execute()
+            result = self.service.events().insert(calendarId=self.calendar_id, body=event).execute()
+            return result.get('id')
         except HttpError as err:
             raise Exception(
                 "Failed to insert event '{}' ({} -> {}) into calendar {}: {}".format(
@@ -67,10 +60,23 @@ class google_calendar():
                 )
             )
 
+    def update_event(self, event_id, start, end, title):
+        """Update an existing event's time/title in place (keeps the same event_id)."""
+        event = {
+            'summary': title,
+            'start': {'dateTime': start, 'timeZone': 'Europe/Stockholm'},
+            'end': {'dateTime': end, 'timeZone': 'Europe/Stockholm'}
+        }
+        try:
+            self.service.events().update(
+                calendarId=self.calendar_id, eventId=event_id, body=event
+            ).execute()
+        except HttpError as err:
+            raise Exception("Failed to update event {}: {}".format(event_id, err))
+
     def _get_all_events(self):
-        """Fetch events from the calendar within the sync window, handling pagination."""
-        existing_events = []
-        event_ids = {}
+        """Fetch events within the sync window, keyed by (date, function) -> full event info."""
+        events_by_key = {}
         page_token = None
 
         time_min = datetime.now(timezone.utc).isoformat()
@@ -87,52 +93,94 @@ class google_calendar():
                     maxResults=2500,
                 ).execute()
             except HttpError as err:
-                raise Exception(
-                    "Failed to list events from calendar {}: {}".format(self.calendar_id, err)
-                )
+                raise Exception("Failed to list events from calendar {}: {}".format(self.calendar_id, err))
 
             for event in response.get('items', []):
                 start = event.get('start')
                 end = event.get('end')
                 summary = event.get('summary')
-                if start and end and summary:
-                    if start.get('dateTime') and end.get('dateTime'):
-                        starttime = start.get('dateTime')
-                        endtime = end.get('dateTime')
-                        existing_events.append((starttime, endtime, summary))
-                        event_ids[(starttime, endtime, summary)] = event.get('id')
+                if start and end and summary and start.get('dateTime') and end.get('dateTime'):
+                    starttime = start.get('dateTime')
+                    endtime = end.get('dateTime')
+                    key = (_shift_date(starttime), summary)
+                    events_by_key[key] = {
+                        'event_id': event.get('id'),
+                        'starttime': starttime,
+                        'endtime': endtime,
+                        'summary': summary,
+                    }
             page_token = response.get('nextPageToken')
             if not page_token:
                 break
-        return existing_events, event_ids
+        return events_by_key
 
     def sync_dataframe(self, df):
-        existing_events, event_ids = self._get_all_events()
-        df_shifts = []
-        added, deleted = 0, 0
+        """
+        Sync scraped shifts to the calendar. Returns a dict with counts and a list
+        of change records (added / removed / modified) for downstream notification.
+        """
+        existing = self._get_all_events()
+        seen_keys = set()
 
-        for i, row in df.iterrows():
-            # Only sync shifts marked 'Aktiv' on PARPAS
-            if row['status'] == 'Aktiv':
-                shift_key = (row['starttime'], row['endtime'], row['function'])
-                df_shifts.append(shift_key)
-                if shift_key not in existing_events:
-                    print("Event added\n", "Starttime:", row['starttime'], "Endtime:", row['endtime'], "Function:", row['function'])
-                    self.add_event(row['starttime'], row['endtime'], row['function'], row['status'])
-                    added += 1
+        added, deleted, modified, unchanged = 0, 0, 0, 0
+        changes = []
 
-        # Remove events that were previously synced but are no longer active on PARPAS
-        # (shift swapped, approved leave, etc.) within the sync window.
-        for event_set in existing_events:
-            if event_set not in df_shifts:
-                print("Event deleted\n", "Starttime:", event_set[0], "Endtime:", event_set[1], "Function:", event_set[2])
-                self.delete_event(event_ids.get(event_set))
+        for _, row in df.iterrows():
+            if row['status'] != 'Aktiv':
+                continue
+
+            starttime, endtime, function = row['starttime'], row['endtime'], row['function']
+            key = (_shift_date(starttime), function)
+            seen_keys.add(key)
+
+            if key not in existing:
+                print("Event added\n", "Starttime:", starttime, "Endtime:", endtime, "Function:", function)
+                self.add_event(starttime, endtime, function, row['status'])
+                added += 1
+                changes.append({
+                    'type': 'added',
+                    'date': _shift_date(starttime),
+                    'function': function,
+                    'new_start': starttime,
+                    'new_end': endtime,
+                })
+            else:
+                old = existing[key]
+                if old['starttime'] != starttime or old['endtime'] != endtime:
+                    print("Event modified\n", "Function:", function,
+                          "Old:", old['starttime'], "-", old['endtime'],
+                          "New:", starttime, "-", endtime)
+                    self.update_event(old['event_id'], starttime, endtime, function)
+                    modified += 1
+                    changes.append({
+                        'type': 'modified',
+                        'date': _shift_date(starttime),
+                        'function': function,
+                        'old_start': old['starttime'],
+                        'old_end': old['endtime'],
+                        'new_start': starttime,
+                        'new_end': endtime,
+                    })
+                else:
+                    unchanged += 1
+
+        for key, old in existing.items():
+            if key not in seen_keys:
+                print("Event deleted\n", "Starttime:", old['starttime'], "Endtime:", old['endtime'], "Function:", old['summary'])
+                self.delete_event(old['event_id'])
                 deleted += 1
+                changes.append({
+                    'type': 'deleted',
+                    'date': _shift_date(old['starttime']),
+                    'function': old['summary'],
+                    'old_start': old['starttime'],
+                    'old_end': old['endtime'],
+                })
 
-        print("Sync summary: {} added, {} deleted, {} unchanged".format(
-            added, deleted, len(existing_events) - deleted
+        print("Sync summary: {} added, {} modified, {} deleted, {} unchanged".format(
+            added, modified, deleted, unchanged
         ))
-        return {"added": added, "deleted": deleted}
+        return {"added": added, "modified": modified, "deleted": deleted, "unchanged": unchanged, "changes": changes}
 
     def delete_event(self, event_id):
         if not event_id:
@@ -140,7 +188,6 @@ class google_calendar():
         try:
             self.service.events().delete(calendarId=self.calendar_id, eventId=event_id).execute()
         except HttpError as err:
-            # 410 Gone means it's already deleted -- not a real failure, don't crash the run
             if err.resp.status == 410:
                 print("Event {} already deleted, skipping.".format(event_id))
                 return

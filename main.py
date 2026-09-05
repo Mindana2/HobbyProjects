@@ -5,10 +5,8 @@ from datetime import datetime, timedelta
 import sys
 from backend.softadmin_scraper import softadmin_scraper
 from backend.google_calendar import google_calendar
+from backend.notifier import notify_changes
 
-# How many days ahead of "today" to keep in the synced calendar window.
-# Softadmin's rendered schedule already limits how far ahead shifts show up;
-# this just bounds how far ahead we look when reconciling the calendar.
 BOOKING_WINDOW_DAYS = int(environ.get("BOOKING_WINDOW_DAYS", "75"))
 
 
@@ -25,7 +23,6 @@ def filter_by_window(df, window_days):
 
 
 def main():
-    # Load .env FIRST so all env vars are available before constructing objects
     current_dir = Path(__file__).resolve().parent
     env_path = current_dir / '.env'
     dotenv.load_dotenv(dotenv_path=env_path)
@@ -66,7 +63,11 @@ def main():
         print("FATAL: Google Calendar sync failed: {}".format(err), file=sys.stderr)
         sys.exit(1)
 
-    print("Done. {} added, {} deleted.".format(result["added"], result["deleted"]))
+    print("Done. {} added, {} modified, {} deleted.".format(
+        result["added"], result["modified"], result["deleted"]
+    ))
+
+    notify_changes(result["changes"])
 
 
 if __name__ == "__main__":
